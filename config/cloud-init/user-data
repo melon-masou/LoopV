@@ -1,0 +1,43 @@
+#cloud-config
+hostname: loopv-gateway
+manage_etc_hosts: true
+ssh_pwauth: false
+users:
+  - name: {{VmUser}}
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+{{SshAuthorizedKeys}}
+chpasswd:
+  expire: false
+  users:
+    - name: {{VmUser}}
+      password: {{VmPassword}}
+      type: text
+write_files:
+  # Init scripts
+  - path: /opt/loopv-init.sh
+    permissions: "0755"
+    encoding: b64
+    content: {{LoopvInitB64}}
+  - path: /etc/loopv.env
+    permissions: "0600"
+    encoding: b64
+    content: {{LoopvEnvB64}}
+  # Network tuning for gateway
+  - path: /etc/sysctl.d/99-loopv-conntrack.conf
+    content: |
+      net.netfilter.nf_conntrack_max = 262144
+      net.netfilter.nf_conntrack_tcp_timeout_established = 600
+      net.netfilter.nf_conntrack_tcp_timeout_time_wait = 60
+      net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 60
+      net.netfilter.nf_conntrack_tcp_timeout_syn_sent = 60
+      net.netfilter.nf_conntrack_udp_timeout_stream = 60
+  - path: /etc/modprobe.d/nf-conntrack.conf
+    content: |
+      options nf_conntrack hashsize=32768
+runcmd:
+  - set -a; . /etc/loopv.env; set +a; /opt/loopv-init.sh
+  - sysctl -p /etc/sysctl.d/99-loopv-conntrack.conf
+  - growpart /dev/sda 1 || true
+  - resize2fs /dev/sda1 || true

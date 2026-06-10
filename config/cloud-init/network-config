@@ -1,0 +1,10 @@
+version: 2
+ethernets:
+  eth0:
+    dhcp4: false
+    addresses:
+      - {{VmGateway}}/{{PrefixLength}}
+  eth1:
+    dhcp4: true
+    dhcp4-overrides:
+      route-metric: 100
