@@ -41,10 +41,10 @@ Install and configure your traffic interception tool or proxy inside the VM.
 
 ### Network Modes
 
-The gateway VM supports two modes. After creation it starts in VmNat mode.
+The gateway VM supports two modes (after creation it starts in VmNat mode):
 
-VmNat: VM accesses the internet through the host NAT. Host traffic is not routed through the VM, but it can serve as a gateway for WSL or other VMs.
-L3Gateway: VM takes over Layer 3 ownership of the physical adapter, including DHCP address acquisition and outbound routing. All host traffic is routed through VM first.
+- VmNat: VM accesses the internet through the host NAT. Host traffic is not routed through the VM, but it can serve as a gateway for WSL or other VMs.
+- L3Gateway: VM takes over Layer 3 ownership of the physical adapter, including DHCP address acquisition and outbound routing. All host traffic is routed through VM first.
 
 Use `scripts\ModeVmNat.bat` and `scripts\ModeL3Gateway.bat` to switch between modes.
 
@@ -56,27 +56,24 @@ In L3Gateway mode, WSL traffic routes through the host and into the VM gateway. 
 
 In VmNat mode, WSL needs to be connected to the `LoopvNet` switch to reach the VM gateway. You can follow this [comment](https://github.com/microsoft/WSL/issues/4150#issuecomment-1018524753) to bridge WSL to the `LoopvNet` switch, then manually configure the WSL interface and gateway.
 
-Scripts in `wsl\` can help attach the switch to WSL and configure networking:
+We have scripts to help attach the switch to WSL and configure networking:
 
 - Download `WSLAttachSwitch.exe` from https://github.com/dantmnf/WSLAttachSwitch/releases and place it at `_run\WSLAttachSwitch.exe`
 - Run `wsl\AttachTaskRegister.bat` to register a scheduled task that allows WSL to trigger the switch attach
+- Inside WSL, ensure:
+  - No network manager (systemd-networkd, netplan, etc.) is managing WSL's network interfaces
+  - `/etc/wsl.conf` contains:
+    ```ini
+    [network]
+    generateResolvConf = false
+    ```
+    which prevent WSL rewriting DNS setting.
 - Inside WSL, run `wsl\WslUseGateway.sh` to attach the switch and route all WSL traffic through the VM gateway.
+  - To apply automatically on every WSL startup, add to `/etc/wsl.conf`:
+    ```ini
+    [boot]
+    command=/mnt/c/path/to/loopv/wsl/WslUseGateway.sh
+    ```
+    Files may be stored on Windows, with their paths converted for use in WSL via `wslpath`.
 
-Before using this script, ensure:
-
-- No network manager (systemd-networkd, netplan, etc.) is managing WSL's network interfaces
-- `/etc/wsl.conf` contains:
-  ```ini
-  [network]
-  generateResolvConf = false
-  ```
-  which prevent WSL rewriting DNS setting.
-
-To apply automatically on every WSL startup, add to `/etc/wsl.conf`:
-  ```ini
-  [boot]
-  command=/mnt/c/path/to/loopv/wsl/WslUseGateway.sh
-  ```
-  Files may be stored on Windows, with their paths converted for use in WSL via `wslpath`.
-
-Use `wsl\WslAttachOnly.sh` to attach the interface without changing the default gateway or DNS.
+Could use `wsl\WslAttachOnly.sh` to attach the interface without changing the default gateway or DNS.
