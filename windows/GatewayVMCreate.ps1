@@ -48,17 +48,6 @@ function ConvertTo-Base64Text {
     [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value.Replace("`r`n", "`n")))
 }
 
-function ConvertTo-CloudInitSshAuthorizedKeys {
-    param([AllowNull()][string[]]$Value)
-
-    $keys = @($Value | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    if ($keys.Count -eq 0) {
-        return ""
-    }
-
-    "    ssh_authorized_keys:`n" + (($keys | ForEach-Object { "      - $_" }) -join "`n")
-}
-
 function Expand-Template {
     param(
         [string]$Template,
@@ -283,27 +272,40 @@ if ($EnableCloudInit) {
         Write-Host "No SSH public keys found. Creating VM without SSH key injection."
     }
 
-    $initScriptRaw = Get-Content -LiteralPath (Join-Path $CloudInitDir "loopv-init.sh") -Raw
-    $cloudInitValues = $VMCreateConfig + $CloudInitConfig + $NetworkConfig
-    $cloudInitValues["LoopvInitB64"] = ConvertTo-Base64Text -Value $initScriptRaw
-    $cloudInitValues["SshAuthorizedKeys"] = ConvertTo-CloudInitSshAuthorizedKeys -Value $sshPublicKeys
+    # Base64 every raw file under vm-files (normalized to LF) into the file map.
+    $vmFilesDir = Resolve-RepoPath "vm-files"
+    $files = [ordered]@{}
+    foreach ($file in (Get-ChildItem -LiteralPath $vmFilesDir -File | Sort-Object Name)) {
+        $files[$file.Name] = ConvertTo-Base64Text -Value (Get-Content -LiteralPath $file.FullName -Raw)
+    }
 
-    $loopvEnvTemplate = Get-Content -LiteralPath (Join-Path $CloudInitDir "loopv.env") -Raw
-    $cloudInitValues["LoopvEnvB64"] = ConvertTo-Base64Text -Value (Expand-Template -Template $loopvEnvTemplate -Values $cloudInitValues)
+    # meta-data carries all Config.ps1 settings plus the file payloads. user-data
+    # consumes them in-guest via jinja (ds.meta_data.*). JSON is valid YAML, so
+    # cloud-init parses it without any extra tooling on the host side.
+    $metaData = [ordered]@{
+        # Required datasource field; no cloud-config equivalent, so it stays here.
+        # hostname comes from user-data, so local-hostname is omitted.
+        "instance-id"         = [string]$NetworkConfig.GatewayVmName
+        "NetworkConfig"       = $NetworkConfig
+        "VMCreateConfig"      = $VMCreateConfig
+        "CloudInitConfig"     = $CloudInitConfig
+        "SshAuthorizedKeys" = @($sshPublicKeys)
+        "VmFiles"               = $files
+    }
+    $metaDataText = $metaData | ConvertTo-Json -Depth 12
 
-    $tproxySetupRaw = Get-Content -LiteralPath (Join-Path $RepoRoot "tproxy\tproxy-setup.sh") -Raw
-    $cloudInitValues["TproxySetupB64"] = ConvertTo-Base64Text -Value $tproxySetupRaw
+    # Keep a copy for debugging/inspection.
+    Set-Content -LiteralPath (Join-Path $vmDir "meta-data") -Value $metaDataText -Encoding ascii
+    Write-Host "Wrote meta-data for inspection: $(Join-Path $vmDir 'meta-data')"
 
-    $tproxyEnvRaw = Get-Content -LiteralPath (Join-Path $RepoRoot "config\tproxy.env") -Raw
-    $cloudInitValues["TproxyEnvB64"] = ConvertTo-Base64Text -Value $tproxyEnvRaw
+    # network-config is not jinja-rendered in-guest, so expand it host-side.
+    $networkConfigTemplate = Get-Content -LiteralPath (Join-Path $CloudInitDir "network-config") -Raw
+    $networkConfigText = Expand-Template -Template $networkConfigTemplate -Values $NetworkConfig
 
-    $tproxyServiceRaw = Get-Content -LiteralPath (Join-Path $RepoRoot "tproxy\loopv-tproxy.service") -Raw
-    $cloudInitValues["TproxyServiceB64"] = ConvertTo-Base64Text -Value $tproxyServiceRaw
-
-    $cloudInitFiles = [ordered]@{}
-    foreach ($fileName in @("user-data", "meta-data", "network-config")) {
-        $template = Get-Content -LiteralPath (Join-Path $CloudInitDir $fileName) -Raw
-        $cloudInitFiles[$fileName] = Expand-Template -Template $template -Values $cloudInitValues
+    $cloudInitFiles = [ordered]@{
+        "user-data"      = (Get-Content -LiteralPath (Join-Path $CloudInitDir "user-data") -Raw).Replace("`r`n", "`n")
+        "meta-data"      = $metaDataText
+        "network-config" = $networkConfigText
     }
 
     New-CloudInitSeedDisk -Path $SeedDiskPath -SizeMB ([int]$CloudInitConfig.SeedDiskSizeMB) -Files $cloudInitFiles

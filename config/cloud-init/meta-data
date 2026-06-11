@@ -1,2 +1,0 @@
-instance-id: {{GatewayVmName}}
-local-hostname: {{GatewayVmName}}

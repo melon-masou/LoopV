@@ -45,12 +45,12 @@ attach_switch() {
     local schtasks_exe="/mnt/c/Windows/System32/schtasks.exe"
     local task_name
 
-    if [[ -z "$CONFIG_INTERNAL_SWITCH_NAME" ]]; then
+    if [[ -z "$W_NetworkConfig_InternalSwitchName" ]]; then
         echo "Cannot read InternalSwitchName from ${PROJECT_DIR}/config/Config.ps1" >&2
         exit 1
     fi
 
-    task_name="\\LoopV\\AttachWslSwitch-${CONFIG_INTERNAL_SWITCH_NAME}"
+    task_name="\\LoopV\\AttachWslSwitch-${W_NetworkConfig_InternalSwitchName}"
     "$schtasks_exe" /Run /TN "$task_name"
 }
 
@@ -108,14 +108,14 @@ set_default_route_metric() {
 configured_wsl_address() {
     local config_wsl_address
 
-    config_wsl_address="$CONFIG_WSL_ADDRESS"
+    config_wsl_address="$W_NetworkConfig_WslAddress"
     if [[ -z "$config_wsl_address" ]]; then
         echo "WslAddress is empty; set NetworkConfig.WslAddress." >&2
         exit 1
     fi
 
     if [[ "$config_wsl_address" != */* ]]; then
-        config_wsl_address="${config_wsl_address}/${CONFIG_PREFIX_LENGTH}"
+        config_wsl_address="${config_wsl_address}/${W_NetworkConfig_PrefixLength}"
     fi
 
     echo "$config_wsl_address"
@@ -177,7 +177,7 @@ attach_only() {
 use_gateway() {
     local vm_gateway wsl_address
 
-    vm_gateway="$CONFIG_VM_GATEWAY"
+    vm_gateway="$W_NetworkConfig_VmGateway"
     wsl_address="$(configured_wsl_address)"
 
     if [[ -z "$vm_gateway" ]]; then

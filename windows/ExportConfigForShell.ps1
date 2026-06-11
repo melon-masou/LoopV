@@ -13,13 +13,12 @@ function ConvertTo-ShellSingleQuoted {
     return "'" + $text.Replace("'", "'\''") + "'"
 }
 
-$values = [ordered]@{
-    CONFIG_INTERNAL_SWITCH_NAME = $NetworkConfig.InternalSwitchName
-    CONFIG_VM_GATEWAY = $NetworkConfig.VmGateway
-    CONFIG_PREFIX_LENGTH = $NetworkConfig.PrefixLength
-    CONFIG_WSL_ADDRESS = $NetworkConfig.WslAddress
-}
-
-foreach ($entry in $values.GetEnumerator()) {
-    "{0}={1}" -f $entry.Key, (ConvertTo-ShellSingleQuoted $entry.Value)
+# Emit every key of each config table as W_<Section>_<Key>=value.
+$sections = "NetworkConfig", "VMCreateConfig", "CloudInitConfig"
+foreach ($section in $sections) {
+    $table = Get-Variable -Name $section -ValueOnly -ErrorAction SilentlyContinue
+    if ($null -eq $table) { continue }
+    foreach ($entry in $table.GetEnumerator()) {
+        "W_{0}_{1}={2}" -f $section, $entry.Key, (ConvertTo-ShellSingleQuoted $entry.Value)
+    }
 }

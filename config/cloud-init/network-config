@@ -1,3 +1,4 @@
+# As cloud-init does not jinja network-config, variables are expanded by powershell from NetworkConfig
 version: 2
 ethernets:
   eth0:

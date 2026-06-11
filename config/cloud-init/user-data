@@ -1,42 +1,53 @@
+## template: jinja
 #cloud-config
 hostname: loopv-gateway
 manage_etc_hosts: true
 ssh_pwauth: false
 users:
-  - name: {{VmUser}}
+  - name: {{ ds.meta_data.CloudInitConfig.VmUser }}
     groups: [sudo]
     shell: /bin/bash
     sudo: ["ALL=(ALL) NOPASSWD:ALL"]
-{{SshAuthorizedKeys}}
+    ssh_authorized_keys:
+{% for key in ds.meta_data.SshAuthorizedKeys %}
+      - {{ key }}
+{% endfor %}
 chpasswd:
   expire: false
   users:
-    - name: {{VmUser}}
-      password: {{VmPassword}}
+    - name: {{ ds.meta_data.CloudInitConfig.VmUser }}
+      password: {{ ds.meta_data.CloudInitConfig.VmPassword }}
       type: text
 write_files:
   # Init scripts
   - path: /opt/loopv-init.sh
     permissions: "0755"
     encoding: b64
-    content: {{LoopvInitB64}}
+    content: {{ ds.meta_data.VmFiles['loopv-init.sh'] }}
   - path: /etc/loopv.env
     permissions: "0600"
-    encoding: b64
-    content: {{LoopvEnvB64}}
+    content: |
+      SSH_LISTEN={{ ds.meta_data.CloudInitConfig.SshListen }}
+      ENABLE_HYPERV_TIMESYNC={{ ds.meta_data.CloudInitConfig.EnableHypervTimesync }}
+      DISABLE_HW_OFFLOAD={{ ds.meta_data.CloudInitConfig.DisableHwOffload }}
+      ENABLE_SERIAL_CONSOLE={{ ds.meta_data.CloudInitConfig.EnableSerialConsole }}
   # tproxy iptables setup
   - path: /etc/loopv/tproxy-setup.sh
     permissions: "0755"
     encoding: b64
-    content: {{TproxySetupB64}}
+    content: {{ ds.meta_data.VmFiles['tproxy-setup.sh'] }}
   - path: /etc/loopv/tproxy.env.d/00-loopv.env
     permissions: "0644"
-    encoding: b64
-    content: {{TproxyEnvB64}}
+    content: |
+      # See tproxy-setup.sh for the full list of variables.
+      # HostAddress/PrefixLength; iptables masks host bits, so this matches the subnet.
+      PROXIED_SRC_CIDR="{{ ds.meta_data.NetworkConfig.HostAddress }}/{{ ds.meta_data.NetworkConfig.PrefixLength }}"
+      FIREWALL_ENABLE="true"
+      FIREWALL_ALLOW_CIDR="{{ ds.meta_data.NetworkConfig.HostAddress }}/{{ ds.meta_data.NetworkConfig.PrefixLength }}"
   - path: /etc/systemd/system/loopv-tproxy.service
     permissions: "0644"
     encoding: b64
-    content: {{TproxyServiceB64}}
+    content: {{ ds.meta_data.VmFiles['loopv-tproxy.service'] }}
   # Network tuning for gateway
   - path: /etc/sysctl.d/99-loopv-conntrack.conf
     content: |
@@ -57,6 +68,6 @@ runcmd:
   - sysctl -p /etc/sysctl.d/99-loopv-conntrack.conf
   - growpart /dev/sda 1 || true
   - resize2fs /dev/sda1 || true
-  - set -a; . /etc/loopv.env; set +a; /opt/loopv-init.sh
   - systemctl daemon-reload
   - systemctl enable --now loopv-tproxy.service
+  - set -a; . /etc/loopv.env; set +a; /opt/loopv-init.sh
