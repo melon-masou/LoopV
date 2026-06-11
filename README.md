@@ -67,7 +67,7 @@ We have scripts to help attach the switch to WSL and configure networking:
     [network]
     generateResolvConf = false
     ```
-    which prevent WSL rewriting DNS setting.
+    which prevents WSL rewriting DNS setting.
 - Inside WSL, run `wsl\WslUseGateway.sh` to attach the switch and route all WSL traffic through the VM gateway.
   - To apply automatically on every WSL startup, add to `/etc/wsl.conf`:
     ```ini

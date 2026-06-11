@@ -1,2 +1,2 @@
-instance-id: {{VmName}}
-local-hostname: {{VmName}}
+instance-id: {{GatewayVmName}}
+local-hostname: {{GatewayVmName}}

@@ -36,8 +36,12 @@ write_files:
   - path: /etc/modprobe.d/nf-conntrack.conf
     content: |
       options nf_conntrack hashsize=32768
+  - path: /etc/modules-load.d/loopv.conf
+    content: |
+      nf_conntrack
 runcmd:
-  - set -a; . /etc/loopv.env; set +a; /opt/loopv-init.sh
+  - systemctl restart systemd-modules-load.service
   - sysctl -p /etc/sysctl.d/99-loopv-conntrack.conf
   - growpart /dev/sda 1 || true
   - resize2fs /dev/sda1 || true
+  - set -a; . /etc/loopv.env; set +a; /opt/loopv-init.sh

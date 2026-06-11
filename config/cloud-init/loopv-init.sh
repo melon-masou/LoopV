@@ -1,16 +1,20 @@
 #!/bin/bash
 
-enable_hyperv_timesync() (
+setup_chrony() (
   set -e
   apt-get update -qq
   apt-get install -y chrony
-  mkdir -p /etc/chrony/conf.d
-  cat > /etc/chrony/conf.d/hyperv.conf <<'LOOPVEOF'
+  cat > /etc/chrony/chrony.conf <<'LOOPVEOF'
+driftfile /var/lib/chrony/chrony.drift
+logdir /var/log/chrony
+rtcsync
+leapseclist /usr/share/zoneinfo/leap-seconds.list
 refclock PHC /dev/ptp_hyperv poll 3 dpoll -2 offset 0 stratum 2
+maxupdateskew 100.0
+makestep 1.0 -1
 LOOPVEOF
   systemctl disable --now systemd-timesyncd
-  systemctl enable chrony
-  systemctl restart chrony
+  systemctl enable --now chrony
 )
 
 disable_hw_offload() (
@@ -40,12 +44,12 @@ LOOPVEOF
   update-grub
 )
 
-if [ -n "${SSH_LISTEN:-}" ]; then
-  restrict_ssh || echo "LoopV: failed ssh-restrict" >&2
+if [ "${ENABLE_HYPERV_TIMESYNC:-false}" = "true" ]; then
+  setup_chrony || echo "LoopV: failed setup-chrony" >&2
 fi
 
-if [ "${ENABLE_HYPERV_TIMESYNC:-false}" = "true" ]; then
-  enable_hyperv_timesync || echo "LoopV: failed hyperv-timesync" >&2
+if [ -n "${SSH_LISTEN:-}" ]; then
+  restrict_ssh || echo "LoopV: failed ssh-restrict" >&2
 fi
 
 if [ "${DISABLE_HW_OFFLOAD:-false}" = "true" ]; then
