@@ -73,8 +73,11 @@ fi
 
 set -e
 
+while $IP rule del fwmark $ROUTE_FW_MASK table $ROUTE_TABLE 2>/dev/null; do
+  :
+done
 $IP rule add fwmark $ROUTE_FW_MASK table $ROUTE_TABLE
-$IP route add local default dev lo table $ROUTE_TABLE
+$IP route replace local default dev lo table $ROUTE_TABLE
 
 # Rebuild tables from scratch
 $IPTABLES -t nat -F
