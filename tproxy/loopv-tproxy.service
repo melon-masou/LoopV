@@ -1,0 +1,12 @@
+[Unit]
+Description=Loopv tproxy rules setup
+After=network.target NetworkManager.service systemd-networkd.service iwd.service
+
+[Service]
+Type=oneshot
+ExecStart=/etc/loopv/tproxy-setup.sh
+RemainAfterExit=true
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target

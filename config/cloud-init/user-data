@@ -24,6 +24,19 @@ write_files:
     permissions: "0600"
     encoding: b64
     content: {{LoopvEnvB64}}
+  # tproxy iptables setup
+  - path: /etc/loopv/tproxy-setup.sh
+    permissions: "0755"
+    encoding: b64
+    content: {{TproxySetupB64}}
+  - path: /etc/loopv/tproxy.env.d/00-loopv.env
+    permissions: "0644"
+    encoding: b64
+    content: {{TproxyEnvB64}}
+  - path: /etc/systemd/system/loopv-tproxy.service
+    permissions: "0644"
+    encoding: b64
+    content: {{TproxyServiceB64}}
   # Network tuning for gateway
   - path: /etc/sysctl.d/99-loopv-conntrack.conf
     content: |
@@ -45,3 +58,5 @@ runcmd:
   - growpart /dev/sda 1 || true
   - resize2fs /dev/sda1 || true
   - set -a; . /etc/loopv.env; set +a; /opt/loopv-init.sh
+  - systemctl daemon-reload
+  - systemctl enable --now loopv-tproxy.service

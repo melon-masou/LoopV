@@ -291,6 +291,15 @@ if ($EnableCloudInit) {
     $loopvEnvTemplate = Get-Content -LiteralPath (Join-Path $CloudInitDir "loopv.env") -Raw
     $cloudInitValues["LoopvEnvB64"] = ConvertTo-Base64Text -Value (Expand-Template -Template $loopvEnvTemplate -Values $cloudInitValues)
 
+    $tproxySetupRaw = Get-Content -LiteralPath (Join-Path $RepoRoot "tproxy\tproxy-setup.sh") -Raw
+    $cloudInitValues["TproxySetupB64"] = ConvertTo-Base64Text -Value $tproxySetupRaw
+
+    $tproxyEnvRaw = Get-Content -LiteralPath (Join-Path $RepoRoot "config\tproxy.env") -Raw
+    $cloudInitValues["TproxyEnvB64"] = ConvertTo-Base64Text -Value $tproxyEnvRaw
+
+    $tproxyServiceRaw = Get-Content -LiteralPath (Join-Path $RepoRoot "tproxy\loopv-tproxy.service") -Raw
+    $cloudInitValues["TproxyServiceB64"] = ConvertTo-Base64Text -Value $tproxyServiceRaw
+
     $cloudInitFiles = [ordered]@{}
     foreach ($fileName in @("user-data", "meta-data", "network-config")) {
         $template = Get-Content -LiteralPath (Join-Path $CloudInitDir $fileName) -Raw
