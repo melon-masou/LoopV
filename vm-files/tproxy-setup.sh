@@ -19,7 +19,10 @@ TCP_TPROXY="${TCP_TPROXY:-true}"
 ROUTE_FW_MASK="1"
 ROUTE_TABLE="100"
 
-# Firewall policy for traffic not matched by the always-allow prefilter:
+# When not "true", no firewall chains are built at all.
+FIREWALL_ENABLE="${FIREWALL_ENABLE:-false}"
+# Firewall policy (only applies when FIREWALL_ENABLE=true) for traffic not
+# matched by the always-allow prefilter:
 #   allow = let into the VM, deny = drop, forward = DNAT to FORWARD_HOST_ADDR.
 FIREWALL_MODE="${FIREWALL_MODE:-deny}"
 # Trusted sources, always allowed through (and on to tproxy). Split by space or newline.
@@ -83,7 +86,7 @@ if [ -z "$PROXIED_SRC_CIDR" ] && [ -n "$DIRECT_DST_CIDR" ]; then
   exit 1
 fi
 
-if [ -z "$FORWARD_HOST_ADDR" ] && [ "$FIREWALL_MODE" = "forward" ]; then
+if [ "$FIREWALL_ENABLE" = "true" ] && [ "$FIREWALL_MODE" = "forward" ] && [ -z "$FORWARD_HOST_ADDR" ]; then
   echo "FIREWALL_MODE=forward requires FORWARD_HOST_ADDR"
   exit 1
 fi
@@ -104,6 +107,10 @@ reload_firewall() {
 
 # Subcommand: only reload the firewall policy chain, then exit.
 if [ "$1" = "reload-firewall" ]; then
+  if [ "$FIREWALL_ENABLE" != "true" ]; then
+    echo "FIREWALL_ENABLE is not true; firewall chains are not built."
+    exit 0
+  fi
   reload_firewall "${2:-$FIREWALL_MODE}"
   exit 0
 fi
@@ -124,26 +131,26 @@ $IPTABLES -t mangle -X
 # the mangle chain is used for TPROXY and firewalling.
 $IPTABLES -t nat -N $PROXY_CHAIN
 $IPTABLES -t mangle -N $PROXY_CHAIN
-# Firewall scaffold: a fixed always-allow prefilter, then hand the rest to
-# FIREWALL_APPLY_CHAIN. That policy chain's contents (allow/deny/forward) are
-# (re)built by reload-firewall, so a mode switch only touches that one chain.
-$IPTABLES -t mangle -N $FIREWALL_CHAIN
-$IPTABLES -t mangle -N $FIREWALL_APPLY_CHAIN
-$IPTABLES -t mangle -A $FIREWALL_CHAIN -i lo -j RETURN
-$IPTABLES -t mangle -A $FIREWALL_CHAIN -m addrtype --src-type LOCAL --dst-type LOCAL -j RETURN
-# Established/related is allowed before the policy, so the VM's own outbound
-# replies (e.g. the proxy's) are never dropped or forwarded, in any mode.
-$IPTABLES -t mangle -A $FIREWALL_CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-for cidr in $FIREWALL_ALLOW_CIDR; do
-  $IPTABLES -t mangle -A $FIREWALL_CHAIN -s "$cidr" -j RETURN
-done
-$IPTABLES -t mangle -A $FIREWALL_CHAIN -j $FIREWALL_APPLY_CHAIN
-$IPTABLES -t mangle -I PREROUTING 1 -j $FIREWALL_CHAIN
 
-# forward mode: packets marked by FIREWALL_APPLY_CHAIN are DNAT'd to the host.
-if [ -n "$FORWARD_HOST_ADDR" ]; then
-  $IPTABLES -t nat -A PREROUTING -i "$FORWARD_IN_INTERFACE" -m mark --mark $FORWARD_MARK -j DNAT --to-destination "$FORWARD_HOST_ADDR"
-  $IPTABLES -t nat -A POSTROUTING -d "$FORWARD_HOST_ADDR" -j MASQUERADE
+if [ "$FIREWALL_ENABLE" = "true" ]; then
+  $IPTABLES -t mangle -N $FIREWALL_CHAIN
+  $IPTABLES -t mangle -N $FIREWALL_APPLY_CHAIN
+  $IPTABLES -t mangle -A $FIREWALL_CHAIN -i lo -j RETURN
+  $IPTABLES -t mangle -A $FIREWALL_CHAIN -m addrtype --src-type LOCAL --dst-type LOCAL -j RETURN
+  # Established/related is allowed before the policy, so the VM's own outbound
+  # replies (e.g. the proxy's) are never dropped or forwarded, in any mode.
+  $IPTABLES -t mangle -A $FIREWALL_CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  for cidr in $FIREWALL_ALLOW_CIDR; do
+    $IPTABLES -t mangle -A $FIREWALL_CHAIN -s "$cidr" -j RETURN
+  done
+  $IPTABLES -t mangle -A $FIREWALL_CHAIN -j $FIREWALL_APPLY_CHAIN
+  $IPTABLES -t mangle -I PREROUTING 1 -j $FIREWALL_CHAIN
+
+  # forward mode: packets marked by FIREWALL_APPLY_CHAIN are DNAT'd to the host.
+  if [ -n "$FORWARD_HOST_ADDR" ]; then
+    $IPTABLES -t nat -A PREROUTING -i "$FORWARD_IN_INTERFACE" -m mark --mark $FORWARD_MARK -j DNAT --to-destination "$FORWARD_HOST_ADDR"
+    $IPTABLES -t nat -A POSTROUTING -d "$FORWARD_HOST_ADDR" -j MASQUERADE
+  fi
 fi
 
 # Never proxy traffic whose destination is the router itself
@@ -204,7 +211,9 @@ if [ "$SNAT_FALLBACK" = "true" ]; then
 fi
 
 # Fill the firewall policy chain according to FIREWALL_MODE.
-reload_firewall "$FIREWALL_MODE"
+if [ "$FIREWALL_ENABLE" = "true" ]; then
+  reload_firewall "$FIREWALL_MODE"
+fi
 
 echo "Finished set up"
 echo "TABLE mangle:"
