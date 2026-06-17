@@ -24,24 +24,6 @@ $HostAddress = $NetworkConfig.HostAddress
 $PrefixLength = $NetworkConfig.PrefixLength
 $VmGateway = $NetworkConfig.VmGateway
 $InternalNatName = "LoopV-$InternalSwitchName"
-$HostAdapterChangeTriggerSwitchReconnect = $NetworkConfig.HostAdapterChangeTriggerSwitchReconnect
-$HostAdapterChangeTasks = @(
-    @{
-        Name = "\LoopV\HostAdapterChanged-WLAN"
-        EventLog = "Microsoft-Windows-WLAN-AutoConfig/Operational"
-        EventXPath = "*[System[(EventID=8001)]]"
-    },
-    @{
-        Name = "\LoopV\HostAdapterChanged-NetworkConnected"
-        EventLog = "Microsoft-Windows-NetworkProfile/Operational"
-        EventXPath = "*[System[(EventID=10000)]]"
-    },
-    @{
-        Name = "\LoopV\HostAdapterChanged-NetworkDisconnected"
-        EventLog = "Microsoft-Windows-NetworkProfile/Operational"
-        EventXPath = "*[System[(EventID=10001)]]"
-    }
-)
 $L3GatewayRouteMetric = $null
 if ($NetworkConfig.ContainsKey("L3GatewayRouteMetric")) {
     $L3GatewayRouteMetric = $NetworkConfig.L3GatewayRouteMetric
@@ -380,54 +362,6 @@ function Set-InternalNat {
     New-NetNat -Name $Name -InternalIPInterfaceAddressPrefix $natPrefix | Out-Null
 }
 
-function Register-HostAdapterChangeHooks {
-    param(
-        [array]$Tasks
-    )
-
-    if (-not $HostAdapterChangeTriggerSwitchReconnect) {
-        Write-Host "Host-adapter change switch reconnect is disabled."
-        return
-    }
-
-    $hookScript = Join-Path $PSScriptRoot "Invoke-HostAdapterChangeHookHidden.vbs"
-    $taskCommand = "wscript.exe `"$hookScript`""
-
-    foreach ($task in $Tasks) {
-        Write-Host "Registering host-adapter change hook task '$($task.Name)' on '$($task.EventLog)'..."
-        $arguments = @(
-            "/Create",
-            "/TN", $task.Name,
-            "/SC", "ONEVENT",
-            "/EC", $task.EventLog,
-            "/MO", $task.EventXPath,
-            "/TR", $taskCommand,
-            "/RL", "HIGHEST",
-            "/F"
-        )
-
-        & schtasks.exe @arguments | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to register host-adapter change hook task '$($task.Name)'. schtasks exit code: $LASTEXITCODE"
-        }
-    }
-}
-
-function Unregister-HostAdapterChangeHooks {
-    param([array]$Tasks)
-
-    foreach ($task in $Tasks) {
-        cmd.exe /c "schtasks.exe /Query /TN `"$($task.Name)`" >nul 2>nul"
-        if ($LASTEXITCODE -eq 0) {
-            Write-Host "Deleting host-adapter change hook task '$($task.Name)'..."
-            schtasks.exe /Delete /TN $task.Name /F | Out-Host
-            if ($LASTEXITCODE -ne 0) {
-                throw "Failed to delete host-adapter change hook task '$($task.Name)'. schtasks exit code: $LASTEXITCODE"
-            }
-        }
-    }
-}
-
 function Connect-VmOutboundAdapter {
     param(
         [string]$VmName,
@@ -505,11 +439,6 @@ function Show-NetworkState {
     Get-NetAdapterBinding -Name $AdapterName -ComponentID "vms_pp" -ErrorAction SilentlyContinue |
         Select-Object Name, DisplayName, ComponentID, Enabled |
         Format-Table -AutoSize | Out-Host
-
-    Write-Host "[Host-adapter change hook tasks]"
-    foreach ($task in $HostAdapterChangeTasks) {
-        schtasks.exe /Query /TN $task.Name /FO LIST 2>$null | Out-Host
-    }
 }
 
 function Wait-BeforeExit {
@@ -522,8 +451,6 @@ function Wait-BeforeExit {
 }
 
 function Use-L3GatewayMode {
-    Unregister-HostAdapterChangeHooks -Tasks $HostAdapterChangeTasks
-
     Remove-InternalNat -Name $InternalNatName
 
     Ensure-InternalSwitch -Name $InternalSwitchName
@@ -540,16 +467,12 @@ function Use-L3GatewayMode {
         -AllowManagementOS $OutboundAllowManagementOS
     Connect-VmOutboundAdapter -VmName $VmName -SwitchName $OutboundSwitchName
 
-    Register-HostAdapterChangeHooks -Tasks $HostAdapterChangeTasks
-
     Write-Host ""
     Write-Host "L3Gateway mode is active."
     Write-Host "'$InternalSwitchName' is the host-to-VM network. VM '$VmName' outbound is connected to External switch '$OutboundSwitchName' on host adapter '$BridgeAdapterName'."
 }
 
 function Use-VmNatMode {
-    Unregister-HostAdapterChangeHooks -Tasks $HostAdapterChangeTasks
-
     # Disconnect VM from LoopvNet-out before changing its type.
     # Set-VMSwitch fails if any VM adapter is still connected to the switch.
     Connect-VmOutboundAdapter -VmName $VmName -SwitchName $NatSwitchName
@@ -569,8 +492,6 @@ function Use-VmNatMode {
 }
 
 function Use-InitMode {
-    Unregister-HostAdapterChangeHooks -Tasks $HostAdapterChangeTasks
-
     Ensure-InternalSwitch -Name $InternalSwitchName
     Set-InternalHostNetwork -Name $InternalSwitchName -Address $HostAddress -Prefix $PrefixLength
 
@@ -583,7 +504,6 @@ function Use-InitMode {
 }
 
 function Use-CleanupMode {
-    Unregister-HostAdapterChangeHooks -Tasks $HostAdapterChangeTasks
     Remove-InternalNat -Name $InternalNatName
 
     Connect-VmOutboundAdapter -VmName $VmName -SwitchName $NatSwitchName

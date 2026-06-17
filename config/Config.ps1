@@ -23,11 +23,6 @@ $NetworkConfig = @{
 
     GatewayVmName = "LoopV-VM"
 
-    # L3Gateway only. When true, host-adapter network changes (e.g. Wi-Fi roam)
-    # trigger a reconnect of the VM outbound adapter to BridgeAdapterName, which
-    # causes the VM to re-negotiate DHCP and refresh its outbound connectivity.
-    HostAdapterChangeTriggerSwitchReconnect = $false
-
     # Optional. Lower values have higher priority. Uncomment to prefer the
     # L3 gateway over ordinary physical-adapter default routes while still
     # allowing more-specific VPN/Tailscale routes to take priority.
