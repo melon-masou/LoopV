@@ -1,9 +1,22 @@
 #!/bin/bash
 
 setup_chrony() (
-  set -e
-  apt-get update -qq
-  apt-get install -y chrony
+  if ! command -v chronyd >/dev/null 2>&1; then
+    if ! apt-get update -qq; then
+      return 1
+    fi
+
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y chrony; then
+      return 1
+    fi
+  fi
+
+  if [ ! -e /dev/ptp_hyperv ]; then
+    echo "LoopV: /dev/ptp_hyperv is missing" >&2
+    return 1
+  fi
+
+  mkdir -p /etc/chrony
   cat > /etc/chrony/chrony.conf <<'LOOPVEOF'
 driftfile /var/lib/chrony/chrony.drift
 logdir /var/log/chrony
@@ -13,8 +26,20 @@ refclock PHC /dev/ptp_hyperv poll 3 dpoll -2 offset 0 stratum 2
 maxupdateskew 100.0
 makestep 1.0 -1
 LOOPVEOF
-  systemctl disable --now systemd-timesyncd
-  systemctl enable --now chrony
+
+  cat > /etc/udev/rules.d/99-loopv-hyperv-ptp.rules <<'LOOPVEOF'
+ACTION=="add", SUBSYSTEM=="ptp", ATTR{clock_name}=="hyperv", SYMLINK+="ptp_hyperv", TAG+="systemd"
+LOOPVEOF
+  udevadm control --reload || true
+  udevadm trigger --subsystem-match=ptp --action=add || true
+
+  systemctl daemon-reload
+  systemctl disable --now systemd-timesyncd >/dev/null 2>&1 || true
+  systemctl enable chrony >/dev/null 2>&1
+  if ! systemctl restart chrony; then
+    systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || true
+    return 1
+  fi
 )
 
 disable_hw_offload() (

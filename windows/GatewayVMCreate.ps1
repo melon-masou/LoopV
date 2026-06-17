@@ -241,6 +241,17 @@ Connect-AdapterIfSwitchExists -VmName $VmName -AdapterName "internal" -SwitchNam
 Ensure-VMNetworkAdapter -VmName $VmName -AdapterName "outbound"
 Connect-AdapterIfSwitchExists -VmName $VmName -AdapterName "outbound" -SwitchName $NatSwitchName
 
+$OutboundVMAdapterMAC = [string]$NetworkConfig.OutboundVMAdapterMAC
+if (-not [string]::IsNullOrWhiteSpace($OutboundVMAdapterMAC)) {
+    $staticMac = ($OutboundVMAdapterMAC -replace '[:-]', '').ToUpper()
+    Set-VMNetworkAdapter -VMName $VmName -Name "outbound" -StaticMacAddress $staticMac
+    Write-Host "Outbound adapter MAC set static: $staticMac"
+}
+else {
+    Set-VMNetworkAdapter -VMName $VmName -Name "outbound" -DynamicMacAddress
+    Write-Host "Outbound adapter MAC set dynamic."
+}
+
 if ($EnableCloudInit) {
     $CloudInitDir = Resolve-RepoPath ([string]$CloudInitConfig.CloudInitDir)
     $VmUser = [string]$CloudInitConfig.VmUser

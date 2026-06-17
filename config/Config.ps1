@@ -12,6 +12,9 @@ $NetworkConfig = @{
     # also joins the outbound layer-2 network and may obtain DHCP alongside the VM.
     OutboundAllowManagementOS = $false
 
+    # Optional. Static MAC for the VM outbound adapter. If unset, Hyper-V assigns a dynamic MAC.
+    # OutboundVMAdapterMAC = "00:15:5D:00:AA:01"
+
     # LoopvNet internal network addresses
     HostAddress = "172.21.200.1"
     VmGateway = "172.21.200.10"
