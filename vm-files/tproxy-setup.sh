@@ -1,4 +1,7 @@
 #!/bin/sh
+# Usage:
+#   tproxy-setup.sh
+#   tproxy-setup.sh reload-firewall [mode]
 
 # Deployment-specific values are read from drop-in env files
 for env_file in /etc/loopv/tproxy.env.d/*.env; do
@@ -16,10 +19,14 @@ TCP_TPROXY="${TCP_TPROXY:-true}"
 ROUTE_FW_MASK="1"
 ROUTE_TABLE="100"
 
-# Source-based firewall. When true, only FIREWALL_ALLOW_CIDR CIDRs may use this gateway.
-# Split by space or newline.
-FIREWALL_ENABLE="${FIREWALL_ENABLE:-false}"
+# Firewall policy for traffic not matched by the always-allow prefilter:
+#   allow = let into the VM, deny = drop, forward = DNAT to FORWARD_HOST_ADDR.
+FIREWALL_MODE="${FIREWALL_MODE:-deny}"
+# Trusted sources, always allowed through (and on to tproxy). Split by space or newline.
 FIREWALL_ALLOW_CIDR="${FIREWALL_ALLOW_CIDR:-172.21.200.0/24}"
+# forward mode: upstream inbound on FORWARD_IN_INTERFACE is DNAT'd to this host
+FORWARD_HOST_ADDR="${FORWARD_HOST_ADDR:-}"
+FORWARD_IN_INTERFACE="${FORWARD_IN_INTERFACE:-eth1}"
 
 # Networks that use this host as gateway and need LAN-destination bypass/SNAT.
 PROXIED_SRC_CIDR="${PROXIED_SRC_CIDR:-}"
@@ -53,6 +60,9 @@ RESERVED_CIDR="${RESERVED_CIDR:-
 # iptables chain names
 PROXY_CHAIN="${PROXY_CHAIN:-TPROXY-PREROUTE}"
 FIREWALL_CHAIN="${FIREWALL_CHAIN:-TPROXY-FIREWALL}"
+FIREWALL_APPLY_CHAIN="${FIREWALL_APPLY_CHAIN:-TPROXY-FIREWALL-APPLY}"
+# Mark for forward-mode packets; must differ from ROUTE_FW_MASK (tproxy).
+FORWARD_MARK="${FORWARD_MARK:-0x2}"
 
 if [ -z "$IPTABLES" ]; then
   if [ -x /sbin/iptables ]; then
@@ -66,12 +76,37 @@ if [ -z "$IPTABLES" ]; then
 fi
 IP="${IP:-/sbin/ip}"
 
+set -e
+
 if [ -z "$PROXIED_SRC_CIDR" ] && [ -n "$DIRECT_DST_CIDR" ]; then
   echo "DIRECT_DST_CIDR requires PROXIED_SRC_CIDR"
   exit 1
 fi
 
-set -e
+if [ -z "$FORWARD_HOST_ADDR" ] && [ "$FIREWALL_MODE" = "forward" ]; then
+  echo "FIREWALL_MODE=forward requires FORWARD_HOST_ADDR"
+  exit 1
+fi
+
+# Rebuild only the firewall policy chain (allow/deny/forward)
+reload_firewall() {
+  mode="${1:-$FIREWALL_MODE}"
+  $IPTABLES -t mangle -N "$FIREWALL_APPLY_CHAIN" 2>/dev/null || true
+  $IPTABLES -t mangle -F "$FIREWALL_APPLY_CHAIN"
+  case "$mode" in
+    allow)   $IPTABLES -t mangle -A "$FIREWALL_APPLY_CHAIN" -j RETURN ;;
+    deny)    $IPTABLES -t mangle -A "$FIREWALL_APPLY_CHAIN" -j DROP ;;
+    forward) $IPTABLES -t mangle -A "$FIREWALL_APPLY_CHAIN" -j MARK --set-mark "$FORWARD_MARK" ;;
+    *) echo "Unknown firewall mode: $mode (expected allow|deny|forward)"; exit 1 ;;
+  esac
+  echo "Firewall mode: $mode"
+}
+
+# Subcommand: only reload the firewall policy chain, then exit.
+if [ "$1" = "reload-firewall" ]; then
+  reload_firewall "${2:-$FIREWALL_MODE}"
+  exit 0
+fi
 
 while $IP rule del fwmark $ROUTE_FW_MASK table $ROUTE_TABLE 2>/dev/null; do
   :
@@ -89,17 +124,26 @@ $IPTABLES -t mangle -X
 # the mangle chain is used for TPROXY and firewalling.
 $IPTABLES -t nat -N $PROXY_CHAIN
 $IPTABLES -t mangle -N $PROXY_CHAIN
-if [ "$FIREWALL_ENABLE" = "true" ]; then
-  $IPTABLES -t mangle -N $FIREWALL_CHAIN
-  # Allow local/established traffic before enforcing client source allowlists.
-  $IPTABLES -t mangle -A $FIREWALL_CHAIN -i lo -j RETURN
-  $IPTABLES -t mangle -A $FIREWALL_CHAIN -m addrtype --src-type LOCAL --dst-type LOCAL -j RETURN
-  $IPTABLES -t mangle -A $FIREWALL_CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-  for cidr in $FIREWALL_ALLOW_CIDR; do
-    $IPTABLES -t mangle -A $FIREWALL_CHAIN -s "$cidr" -j RETURN
-  done
-  $IPTABLES -t mangle -A $FIREWALL_CHAIN -j DROP
-  $IPTABLES -t mangle -I PREROUTING 1 -j $FIREWALL_CHAIN
+# Firewall scaffold: a fixed always-allow prefilter, then hand the rest to
+# FIREWALL_APPLY_CHAIN. That policy chain's contents (allow/deny/forward) are
+# (re)built by reload-firewall, so a mode switch only touches that one chain.
+$IPTABLES -t mangle -N $FIREWALL_CHAIN
+$IPTABLES -t mangle -N $FIREWALL_APPLY_CHAIN
+$IPTABLES -t mangle -A $FIREWALL_CHAIN -i lo -j RETURN
+$IPTABLES -t mangle -A $FIREWALL_CHAIN -m addrtype --src-type LOCAL --dst-type LOCAL -j RETURN
+# Established/related is allowed before the policy, so the VM's own outbound
+# replies (e.g. the proxy's) are never dropped or forwarded, in any mode.
+$IPTABLES -t mangle -A $FIREWALL_CHAIN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+for cidr in $FIREWALL_ALLOW_CIDR; do
+  $IPTABLES -t mangle -A $FIREWALL_CHAIN -s "$cidr" -j RETURN
+done
+$IPTABLES -t mangle -A $FIREWALL_CHAIN -j $FIREWALL_APPLY_CHAIN
+$IPTABLES -t mangle -I PREROUTING 1 -j $FIREWALL_CHAIN
+
+# forward mode: packets marked by FIREWALL_APPLY_CHAIN are DNAT'd to the host.
+if [ -n "$FORWARD_HOST_ADDR" ]; then
+  $IPTABLES -t nat -A PREROUTING -i "$FORWARD_IN_INTERFACE" -m mark --mark $FORWARD_MARK -j DNAT --to-destination "$FORWARD_HOST_ADDR"
+  $IPTABLES -t nat -A POSTROUTING -d "$FORWARD_HOST_ADDR" -j MASQUERADE
 fi
 
 # Never proxy traffic whose destination is the router itself
@@ -159,9 +203,8 @@ if [ "$SNAT_FALLBACK" = "true" ]; then
   done
 fi
 
-$IPTABLES -t filter -D INPUT -j $FIREWALL_CHAIN 2>/dev/null || true
-$IPTABLES -t filter -F $FIREWALL_CHAIN 2>/dev/null || true
-$IPTABLES -t filter -X $FIREWALL_CHAIN 2>/dev/null || true
+# Fill the firewall policy chain according to FIREWALL_MODE.
+reload_firewall "$FIREWALL_MODE"
 
 echo "Finished set up"
 echo "TABLE mangle:"
