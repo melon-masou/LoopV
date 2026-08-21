@@ -238,6 +238,47 @@ function Reset-SwitchHostNetworkToDhcp {
     Set-DnsClientServerAddress -InterfaceAlias $alias -ResetServerAddresses
 }
 
+function Remove-LegacyNetworkBridgeForAdapter {
+    param([string]$AdapterName)
+
+    $adapter = Get-NetAdapter -Name $AdapterName -ErrorAction Stop
+    if (-not $adapter.MacAddress) {
+        throw "Cannot identify legacy Network Bridge for '$AdapterName' because the adapter has no MAC address."
+    }
+
+    # A stale Windows Network Bridge can keep TCP/IP on its multiplexor adapter
+    # after the Hyper-V external switch binding has already been released.
+    $bridges = @(
+        Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.InterfaceDescription -eq "Microsoft Network Adapter Multiplexor Driver" -and
+                $_.MacAddress -eq $adapter.MacAddress
+            }
+    )
+
+    foreach ($bridge in $bridges) {
+        $bridgeGuid = ([guid]$bridge.InterfaceGuid).ToString("B")
+        Write-Host "Destroying stale Network Bridge '$($bridge.Name)' ($bridgeGuid) for '$AdapterName'..."
+        & netsh.exe bridge destroy $bridgeGuid | Out-Host
+        $destroyExitCode = $LASTEXITCODE
+
+        for ($i = 0; $i -lt 30; $i++) {
+            $remaining = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue |
+                Where-Object { $_.InterfaceGuid -eq $bridge.InterfaceGuid }
+            if (-not $remaining) { break }
+            Start-Sleep -Seconds 1
+        }
+
+        if ($remaining) {
+            throw "Failed to destroy stale Network Bridge '$($bridge.Name)' ($bridgeGuid); netsh exit code was $destroyExitCode."
+        }
+
+        if ($destroyExitCode -ne 0) {
+            Write-Warning "netsh returned exit code $destroyExitCode, but Network Bridge '$($bridge.Name)' was removed successfully."
+        }
+    }
+}
+
 function Release-HostAdapter {
     param([string]$AdapterName)
 
@@ -259,6 +300,22 @@ function Release-HostAdapter {
         Disable-NetAdapterBinding -Name $AdapterName -ComponentID "vms_pp" -ErrorAction SilentlyContinue
     }
 
+    Remove-LegacyNetworkBridgeForAdapter -AdapterName $AdapterName
+
+    $multiplexorBinding = Get-NetAdapterBinding -Name $AdapterName -ComponentID "ms_implat" -ErrorAction SilentlyContinue
+    if ($multiplexorBinding -and $multiplexorBinding.Enabled) {
+        Write-Host "Disabling stale multiplexor binding on '$AdapterName'..."
+        Disable-NetAdapterBinding -Name $AdapterName -ComponentID "ms_implat" -ErrorAction Stop
+    }
+
+    foreach ($componentId in @("ms_tcpip", "ms_tcpip6")) {
+        $protocolBinding = Get-NetAdapterBinding -Name $AdapterName -ComponentID $componentId -ErrorAction SilentlyContinue
+        if ($protocolBinding -and -not $protocolBinding.Enabled) {
+            Write-Host "Enabling '$componentId' on '$AdapterName'..."
+            Enable-NetAdapterBinding -Name $AdapterName -ComponentID $componentId -ErrorAction Stop
+        }
+    }
+
     # Restart the adapter to force a full NDIS stack rebuild. This is more reliable
     # than rebinding ms_tcpip because vms_pp removal leaves the NDIS stack in a
     # transitional state where protocol-level rebinds can race and not take effect.
@@ -273,6 +330,30 @@ function Release-HostAdapter {
         $current = Get-NetAdapter -Name $AdapterName -ErrorAction SilentlyContinue
         if ($current -and $current.Status -eq "Up") { break }
     }
+
+    if (-not $current -or $current.Status -ne "Up") {
+        throw "Timed out waiting for '$AdapterName' to come back up."
+    }
+
+    Set-NetIPInterface -InterfaceAlias $AdapterName -AddressFamily IPv4 -Dhcp Enabled
+
+    Write-Host "Waiting for '$AdapterName' to obtain an IPv4 address and default route..."
+    for ($i = 0; $i -lt 30; $i++) {
+        $address = Get-NetIPAddress -InterfaceAlias $AdapterName -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+            Where-Object { $_.AddressState -eq "Preferred" -and $_.IPAddress -notlike "169.254.*" } |
+            Select-Object -First 1
+        $defaultRoute = Get-NetRoute -InterfaceAlias $AdapterName -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+            Where-Object { $_.State -eq "Alive" } |
+            Select-Object -First 1
+        if ($address -and $defaultRoute) { break }
+        Start-Sleep -Seconds 1
+    }
+
+    if (-not $address -or -not $defaultRoute) {
+        throw "'$AdapterName' did not obtain both an IPv4 address and a default route after bridge cleanup."
+    }
+
+    Write-Host "'$AdapterName' is using $($address.IPAddress) with gateway $($defaultRoute.NextHop)."
 }
 
 function Remove-LoopVSwitch {

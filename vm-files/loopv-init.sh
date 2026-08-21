@@ -22,9 +22,9 @@ driftfile /var/lib/chrony/chrony.drift
 logdir /var/log/chrony
 rtcsync
 leapseclist /usr/share/zoneinfo/leap-seconds.list
-refclock PHC /dev/ptp_hyperv poll 3 dpoll -2 offset 0 stratum 2
+refclock PHC /dev/ptp_hyperv poll 2 dpoll -2 offset 0 stratum 2 filter 4 minsamples 4 maxsamples 8 trust
 maxupdateskew 100.0
-makestep 1.0 -1
+makestep 0.1 -1
 LOOPVEOF
 
   cat > /etc/udev/rules.d/99-loopv-hyperv-ptp.rules <<'LOOPVEOF'
@@ -40,6 +40,22 @@ LOOPVEOF
     systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || true
     return 1
   fi
+)
+
+setup_hyperv_clocksource() (
+  if grep -qw hyperv_clocksource_tsc_page /sys/devices/system/clocksource/clocksource0/available_clocksource 2>/dev/null; then
+    echo hyperv_clocksource_tsc_page > /sys/devices/system/clocksource/clocksource0/current_clocksource
+  fi
+
+  if [ -w /sys/module/hv_utils/parameters/timesync_implicit ]; then
+    echo Y > /sys/module/hv_utils/parameters/timesync_implicit
+  fi
+
+  mkdir -p /etc/default/grub.d
+  cat > /etc/default/grub.d/99-loopv-clocksource.cfg <<'LOOPVEOF'
+GRUB_CMDLINE_LINUX="$GRUB_CMDLINE_LINUX clocksource=hyperv_clocksource_tsc_page hv_utils.timesync_implicit=1"
+LOOPVEOF
+  update-grub
 )
 
 disable_hw_offload() (
@@ -70,17 +86,29 @@ LOOPVEOF
 )
 
 if [ "${ENABLE_HYPERV_TIMESYNC:-false}" = "true" ]; then
-  setup_chrony || echo "LoopV: failed setup-chrony" >&2
+  if ! setup_hyperv_clocksource; then
+    echo "LoopV: failed setup-hyperv-clocksource" >&2
+  fi
+
+  if ! setup_chrony; then
+    echo "LoopV: failed setup-chrony" >&2
+  fi
 fi
 
 if [ -n "${SSH_LISTEN:-}" ]; then
-  restrict_ssh || echo "LoopV: failed ssh-restrict" >&2
+  if ! restrict_ssh; then
+    echo "LoopV: failed ssh-restrict" >&2
+  fi
 fi
 
 if [ "${DISABLE_HW_OFFLOAD:-false}" = "true" ]; then
-  disable_hw_offload || echo "LoopV: failed disable-hw-offload" >&2
+  if ! disable_hw_offload; then
+    echo "LoopV: failed disable-hw-offload" >&2
+  fi
 fi
 
 if [ "${ENABLE_SERIAL_CONSOLE:-false}" = "true" ]; then
-  enable_serial_console || echo "LoopV: failed serial-console" >&2
+  if ! enable_serial_console; then
+    echo "LoopV: failed serial-console" >&2
+  fi
 fi

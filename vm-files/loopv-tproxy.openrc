@@ -1,0 +1,19 @@
+#!/sbin/openrc-run
+
+name="LoopV tproxy setup"
+
+depend() {
+    after net
+    before clash
+}
+
+start() {
+    ebegin "Setting up LoopV tproxy rules"
+    /etc/loopv/tproxy-setup.sh
+    eend $?
+}
+
+stop() {
+    ebegin "Leaving LoopV tproxy rules in place"
+    eend 0
+}
