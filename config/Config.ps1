@@ -29,6 +29,28 @@ $NetworkConfig = @{
     # L3GatewayRouteMetric = 5
 }
 
+# Inbound mappings for the WSL NAT endpoint.
+# This section is applied only by "wsl\WslAttachOnly.sh", "wsl\WslUseGateway.sh", "wsl\WslDetach.sh",
+# or "wsl\NetworkApply.sh applyPortForward", which should be specified in boot section in /etc/wsl.conf.
+#
+# The mappings belong to the WSL NAT endpoint and do not depend on whether
+# LoopvNet is attached.
+# HNS removes all mappings when `wsl --shutdown` destroys that endpoint; the next
+# WSL startup recreates the entries below. Restart WSL after editing or removing
+# entries. A missing task or a mapping that cannot be added is ignored.
+#
+# Protocol may be "TCP" or "UDP". HostPort is exposed on the Windows host,
+# GuestPort is the port inside WSL, and AllowedRemoteAddresses limits inbound
+# clients. Add more hashtables with the same fields as needed.
+$WslPortForwards = @(
+    # @{
+    #     Protocol = "UDP"
+    #     HostPort = 9500
+    #     GuestPort = 9500
+    #     AllowedRemoteAddresses = @("192.168.0.0/24")
+    # }
+)
+
 $VMCreateConfig = @{
     VmMemoryMB = 1024
     ProcessorCount = 2

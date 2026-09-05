@@ -16,7 +16,9 @@ if "%SWITCH_NAME%"=="" (
 )
 
 set "TASK_NAME=\LoopV\AttachWslSwitch-%SWITCH_NAME%"
+set "PORT_FORWARD_TASK_NAME=\LoopV\ApplyWslPortForwards"
 set "EXE=%~dp0..\_run\WSLAttachSwitch.exe"
+set "PORT_FORWARD_SCRIPT=%~dp0ApplyWslPortForwards.ps1"
 
 if not exist "%EXE%" (
   echo Cannot find "%EXE%"
@@ -24,16 +26,31 @@ if not exist "%EXE%" (
   exit /b 1
 )
 
+if not exist "%PORT_FORWARD_SCRIPT%" (
+  echo Cannot find "%PORT_FORWARD_SCRIPT%"
+  pause
+  exit /b 1
+)
+
 echo Registering scheduled task %TASK_NAME%...
 schtasks.exe /Create /TN "%TASK_NAME%" /TR "\"%EXE%\" \"%SWITCH_NAME%\"" /SC ONCE /ST 23:59 /RL HIGHEST /F
 if not "%errorlevel%"=="0" (
-  echo Failed to register scheduled task.
+  echo Failed to register attach scheduled task.
+  pause
+  exit /b 1
+)
+
+echo Registering scheduled task %PORT_FORWARD_TASK_NAME%...
+schtasks.exe /Create /TN "%PORT_FORWARD_TASK_NAME%" /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%PORT_FORWARD_SCRIPT%\"" /SC ONCE /ST 23:59 /RL HIGHEST /F
+if not "%errorlevel%"=="0" (
+  echo Failed to register port-forward scheduled task.
   pause
   exit /b 1
 )
 
 echo.
 echo Registered %TASK_NAME%
+echo Registered %PORT_FORWARD_TASK_NAME%
 echo Run it with:
 echo   schtasks.exe /Run /TN "%TASK_NAME%"
 echo.

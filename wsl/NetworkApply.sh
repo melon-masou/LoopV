@@ -15,11 +15,11 @@ NAT_LOW_PRIORITY_METRIC="9000"
 SWITCH_GATEWAY_METRIC="0"
 
 usage() {
-    echo "Usage: $0 attachOnly|useGateway|detach" >&2
+    echo "Usage: $0 attachOnly|useGateway|detach|applyPortForward" >&2
     exit 2
 }
 
-if [[ "$ACTION" != "attachOnly" && "$ACTION" != "useGateway" && "$ACTION" != "detach" ]]; then
+if [[ "$ACTION" != "attachOnly" && "$ACTION" != "useGateway" && "$ACTION" != "detach" && "$ACTION" != "applyPortForward" ]]; then
     usage
 fi
 
@@ -52,6 +52,11 @@ attach_switch() {
 
     task_name="\\LoopV\\AttachWslSwitch-${W_NetworkConfig_InternalSwitchName}"
     "$schtasks_exe" /Run /TN "$task_name"
+}
+
+apply_port_forwards() {
+    /mnt/c/Windows/System32/schtasks.exe \
+        /Run /TN '\LoopV\ApplyWslPortForwards' >/dev/null 2>&1 || true
 }
 
 wait_for_iface() {
@@ -211,7 +216,19 @@ detach() {
 }
 
 case "$ACTION" in
-    attachOnly) attach_only ;;
-    useGateway) use_gateway ;;
-    detach) detach ;;
+    attachOnly)
+        attach_only
+        apply_port_forwards
+        ;;
+    useGateway)
+        use_gateway
+        apply_port_forwards
+        ;;
+    detach)
+        detach
+        apply_port_forwards
+        ;;
+    applyPortForward)
+        apply_port_forwards
+        ;;
 esac
