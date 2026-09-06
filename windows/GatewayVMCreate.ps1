@@ -290,6 +290,12 @@ if ($EnableCloudInit) {
         $files[$file.Name] = ConvertTo-Base64Text -Value (Get-Content -LiteralPath $file.FullName -Raw)
     }
 
+    $vmLoopVConfigPath = Resolve-RepoPath "config\VmLoopVConfig.env"
+    if (-not (Test-Path -LiteralPath $vmLoopVConfigPath)) {
+        throw "VM LoopV config not found: $vmLoopVConfigPath"
+    }
+    $files["VmLoopVConfig.env"] = ConvertTo-Base64Text -Value (Get-Content -LiteralPath $vmLoopVConfigPath -Raw)
+
     # meta-data carries all Config.ps1 settings plus the file payloads. user-data
     # consumes them in-guest via jinja (ds.meta_data.*). JSON is valid YAML, so
     # cloud-init parses it without any extra tooling on the host side.

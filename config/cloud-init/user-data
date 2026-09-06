@@ -45,7 +45,10 @@ write_files:
       FIREWALL_ENABLE="true"
       FIREWALL_MODE="deny"
       FIREWALL_ALLOW_CIDR="{{ ds.meta_data.NetworkConfig.HostAddress }}/{{ ds.meta_data.NetworkConfig.PrefixLength }}"
-      FORWARD_HOST_ADDR="{{ ds.meta_data.NetworkConfig.HostAddress }}"
+  - path: /etc/loopv/tproxy.env.d/VmLoopVConfig.env
+    permissions: "0644"
+    encoding: b64
+    content: {{ ds.meta_data.VmFiles['VmLoopVConfig.env'] }}
   - path: /etc/systemd/system/loopv-tproxy.service
     permissions: "0644"
     encoding: b64

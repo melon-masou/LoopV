@@ -22,14 +22,16 @@ ROUTE_TABLE="100"
 # When not "true", no firewall chains are built at all.
 FIREWALL_ENABLE="${FIREWALL_ENABLE:-false}"
 # Firewall policy (only applies when FIREWALL_ENABLE=true) for traffic not
-# matched by the always-allow prefilter:
-#   allow = let into the VM, deny = drop, forward = DNAT to FORWARD_HOST_ADDR.
+# matched by the always-allow prefilter: allow or deny.
 FIREWALL_MODE="${FIREWALL_MODE:-deny}"
 # Trusted sources, always allowed through (and on to tproxy). Split by space or newline.
 FIREWALL_ALLOW_CIDR="${FIREWALL_ALLOW_CIDR:-172.21.200.0/24}"
-# forward mode: upstream inbound on FORWARD_IN_INTERFACE is DNAT'd to this host
-FORWARD_HOST_ADDR="${FORWARD_HOST_ADDR:-}"
-FORWARD_IN_INTERFACE="${FORWARD_IN_INTERFACE:-eth1}"
+
+# Explicit inbound port forwarding. Rules use this format:
+#   protocol:port[,port-range...]=target-ip;...
+PORT_FORWARD_RULES="${PORT_FORWARD_RULES:-}"
+PORT_FORWARD_IN_INTERFACE="${PORT_FORWARD_IN_INTERFACE:-}"
+PORT_FORWARD_SNAT="${PORT_FORWARD_SNAT:-false}"
 
 # Networks that use this host as gateway and need LAN-destination bypass/SNAT.
 PROXIED_SRC_CIDR="${PROXIED_SRC_CIDR:-}"
@@ -64,8 +66,7 @@ RESERVED_CIDR="${RESERVED_CIDR:-
 PROXY_CHAIN="${PROXY_CHAIN:-TPROXY-PREROUTE}"
 FIREWALL_CHAIN="${FIREWALL_CHAIN:-TPROXY-FIREWALL}"
 FIREWALL_APPLY_CHAIN="${FIREWALL_APPLY_CHAIN:-TPROXY-FIREWALL-APPLY}"
-# Mark for forward-mode packets; must differ from ROUTE_FW_MASK (tproxy).
-FORWARD_MARK="${FORWARD_MARK:-0x2}"
+PORT_FORWARD_CHAIN="LOOPV-PORT-FORWARD"
 
 if [ -z "$IPTABLES" ]; then
   if [ -x /sbin/iptables ]; then
@@ -78,20 +79,157 @@ if [ -z "$IPTABLES" ]; then
   fi
 fi
 IP="${IP:-/sbin/ip}"
+SYSCTL="${SYSCTL:-/sbin/sysctl}"
 
 set -e
+
+config_error() {
+  echo "Invalid port-forward config: $*" >&2
+  return 1
+}
+
+validate_port_number() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+validate_port_list() {
+  remaining_ports="$1"
+  port_count=0
+
+  case "$remaining_ports" in
+    ''|,*|*,|*,,*) return 1 ;;
+  esac
+
+  while [ -n "$remaining_ports" ]; do
+    case "$remaining_ports" in
+      *,*)
+        port_part=${remaining_ports%%,*}
+        remaining_ports=${remaining_ports#*,}
+        ;;
+      *)
+        port_part=$remaining_ports
+        remaining_ports=
+        ;;
+    esac
+
+    case "$port_part" in
+      *-*)
+        range_start=${port_part%%-*}
+        range_end=${port_part#*-}
+        case "$range_end" in
+          *-*) return 1 ;;
+        esac
+        validate_port_number "$range_start" || return 1
+        validate_port_number "$range_end" || return 1
+        [ "$range_start" -le "$range_end" ] || return 1
+        port_count=$((port_count + 2))
+        ;;
+      *)
+        validate_port_number "$port_part" || return 1
+        port_count=$((port_count + 1))
+        ;;
+    esac
+  done
+
+  # iptables multiport accepts at most 15 ports; a range consumes two slots.
+  [ "$port_count" -le 15 ]
+}
+
+validate_ipv4_address() {
+  case "$1" in
+    ''|*[!0-9.]*|.*|*.|*..*) return 1 ;;
+  esac
+
+  previous_ifs=$IFS
+  IFS=.
+  set -- $1
+  IFS=$previous_ifs
+  [ "$#" -eq 4 ] || return 1
+
+  for octet in "$@"; do
+    case "$octet" in
+      ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$octet" -le 255 ] || return 1
+  done
+}
+
+for_each_port_forward_rule() {
+  callback="$1"
+  remaining_rules=$PORT_FORWARD_RULES
+
+  case "$remaining_rules" in
+    ';'*|*';'|*';;'*) config_error "empty rule" ;;
+  esac
+
+  while [ -n "$remaining_rules" ]; do
+    case "$remaining_rules" in
+      *';'*)
+        rule=${remaining_rules%%;*}
+        remaining_rules=${remaining_rules#*;}
+        ;;
+      *)
+        rule=$remaining_rules
+        remaining_rules=
+        ;;
+    esac
+
+    protocol=${rule%%:*}
+    rule_body=${rule#*:}
+    [ "$rule_body" != "$rule" ] || config_error "missing ':' in '$rule'"
+
+    ports=${rule_body%%=*}
+    target=${rule_body#*=}
+    [ "$target" != "$rule_body" ] || config_error "missing '=' in '$rule'"
+    case "$target" in
+      *=*) config_error "too many '=' characters in '$rule'" ;;
+    esac
+
+    case "$protocol" in
+      tcp|udp) ;;
+      *) config_error "unsupported protocol '$protocol'" ;;
+    esac
+    validate_port_list "$ports" || config_error "invalid port list '$ports'"
+    validate_ipv4_address "$target" || config_error "invalid target IPv4 address '$target'"
+
+    "$callback" "$protocol" "$ports" "$target"
+  done
+}
+
+validate_port_forward_rule() {
+  :
+}
+
+if [ -n "$PORT_FORWARD_RULES" ]; then
+  [ -n "$PORT_FORWARD_IN_INTERFACE" ] || config_error "PORT_FORWARD_IN_INTERFACE is required"
+  case "$PORT_FORWARD_SNAT" in
+    true|false) ;;
+    *) config_error "PORT_FORWARD_SNAT must be true or false" ;;
+  esac
+  $IP link show dev "$PORT_FORWARD_IN_INTERFACE" >/dev/null 2>&1 || config_error "interface '$PORT_FORWARD_IN_INTERFACE' does not exist"
+  for_each_port_forward_rule validate_port_forward_rule
+fi
 
 if [ -z "$PROXIED_SRC_CIDR" ] && [ -n "$DIRECT_DST_CIDR" ]; then
   echo "DIRECT_DST_CIDR requires PROXIED_SRC_CIDR"
   exit 1
 fi
 
-if [ "$FIREWALL_ENABLE" = "true" ] && [ "$FIREWALL_MODE" = "forward" ] && [ -z "$FORWARD_HOST_ADDR" ]; then
-  echo "FIREWALL_MODE=forward requires FORWARD_HOST_ADDR"
-  exit 1
+if [ "$FIREWALL_ENABLE" = "true" ]; then
+  case "$FIREWALL_MODE" in
+    allow|deny) ;;
+    *) echo "Unknown firewall mode: $FIREWALL_MODE (expected allow|deny)" >&2; exit 1 ;;
+  esac
 fi
 
-# Rebuild only the firewall policy chain (allow/deny/forward)
+if [ -n "$PORT_FORWARD_RULES" ]; then
+  $SYSCTL -w net.ipv4.ip_forward=1 >/dev/null
+fi
+
+# Rebuild only the firewall policy chain (allow/deny)
 reload_firewall() {
   mode="${1:-$FIREWALL_MODE}"
   $IPTABLES -t mangle -N "$FIREWALL_APPLY_CHAIN" 2>/dev/null || true
@@ -99,8 +237,7 @@ reload_firewall() {
   case "$mode" in
     allow)   $IPTABLES -t mangle -A "$FIREWALL_APPLY_CHAIN" -j RETURN ;;
     deny)    $IPTABLES -t mangle -A "$FIREWALL_APPLY_CHAIN" -j DROP ;;
-    forward) $IPTABLES -t mangle -A "$FIREWALL_APPLY_CHAIN" -j MARK --set-mark "$FORWARD_MARK" ;;
-    *) echo "Unknown firewall mode: $mode (expected allow|deny|forward)"; exit 1 ;;
+    *) echo "Unknown firewall mode: $mode (expected allow|deny)"; exit 1 ;;
   esac
   echo "Firewall mode: $mode"
 }
@@ -143,15 +280,39 @@ if [ "$FIREWALL_ENABLE" = "true" ]; then
   for cidr in $FIREWALL_ALLOW_CIDR; do
     $IPTABLES -t mangle -A $FIREWALL_CHAIN -s "$cidr" -j RETURN
   done
+fi
+
+apply_port_forward_rule() {
+  protocol="$1"
+  ports="$2"
+  target="$3"
+  iptables_ports=$(printf '%s' "$ports" | tr '-' ':')
+
+  $IPTABLES -t nat -A "$PORT_FORWARD_CHAIN" -p "$protocol" -m multiport --dports "$iptables_ports" -j DNAT --to-destination "$target"
+
+  if [ "$FIREWALL_ENABLE" = "true" ]; then
+    $IPTABLES -t mangle -A "$FIREWALL_CHAIN" -i "$PORT_FORWARD_IN_INTERFACE" -m addrtype --dst-type LOCAL -p "$protocol" -m multiport --dports "$iptables_ports" -j RETURN
+  fi
+
+  if [ "$PORT_FORWARD_SNAT" = "true" ]; then
+    $IPTABLES -t nat -A POSTROUTING -d "$target" -p "$protocol" -m multiport --dports "$iptables_ports" -m conntrack --ctstate DNAT -j MASQUERADE
+  fi
+}
+
+if [ -n "$PORT_FORWARD_RULES" ]; then
+  $IPTABLES -t nat -N "$PORT_FORWARD_CHAIN"
+  $IPTABLES -t nat -A PREROUTING -i "$PORT_FORWARD_IN_INTERFACE" -m addrtype --dst-type LOCAL -j "$PORT_FORWARD_CHAIN"
+  for_each_port_forward_rule apply_port_forward_rule
+fi
+
+if [ "$FIREWALL_ENABLE" = "true" ]; then
   $IPTABLES -t mangle -A $FIREWALL_CHAIN -j $FIREWALL_APPLY_CHAIN
   $IPTABLES -t mangle -I PREROUTING 1 -j $FIREWALL_CHAIN
-
-  # forward mode: packets marked by FIREWALL_APPLY_CHAIN are DNAT'd to the host.
-  if [ -n "$FORWARD_HOST_ADDR" ]; then
-    $IPTABLES -t nat -A PREROUTING -i "$FORWARD_IN_INTERFACE" -m mark --mark $FORWARD_MARK -j DNAT --to-destination "$FORWARD_HOST_ADDR"
-    $IPTABLES -t nat -A POSTROUTING -d "$FORWARD_HOST_ADDR" -j MASQUERADE
-  fi
 fi
+
+# Port-forwarded connections belong to their DNAT target, not the transparent proxy.
+$IPTABLES -t nat -A $PROXY_CHAIN -m conntrack --ctstate DNAT -j RETURN
+$IPTABLES -t mangle -A $PROXY_CHAIN -m conntrack --ctstate DNAT -j RETURN
 
 # Never proxy traffic whose destination is the router itself
 $IPTABLES -t nat -A $PROXY_CHAIN -m addrtype --dst-type LOCAL -j RETURN
