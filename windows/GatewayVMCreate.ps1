@@ -62,6 +62,22 @@ function Expand-Template {
     $result
 }
 
+function Get-OrCreatePersistentHostname {
+    # Hostname is a random 8-char [A-Z0-9] generated once and pinned in _run, so
+    # it stays stable across VM rebuilds instead of being regenerated each time.
+    param([string]$Path)
+
+    if (Test-Path -LiteralPath $Path) {
+        $existing = (Get-Content -LiteralPath $Path -Raw).Trim()
+        if ($existing -match '^[A-Z0-9]{8}$') { return $existing }
+    }
+
+    $alphabet = [char[]](65..90 + 48..57)  # A-Z, 0-9
+    $hostname = -join (1..8 | ForEach-Object { Get-Random -InputObject $alphabet })
+    Set-Content -LiteralPath $Path -Value $hostname -Encoding ascii -NoNewline
+    return $hostname
+}
+
 function New-CloudInitSeedDisk {
     param(
         [string]$Path,
@@ -299,10 +315,13 @@ if ($EnableCloudInit) {
     # meta-data carries all Config.ps1 settings plus the file payloads. user-data
     # consumes them in-guest via jinja (ds.meta_data.*). JSON is valid YAML, so
     # cloud-init parses it without any extra tooling on the host side.
+    $vmHostname = Get-OrCreatePersistentHostname -Path (Join-Path $vmDir "vm-hostname")
+
     $metaData = [ordered]@{
         # Required datasource field; no cloud-config equivalent, so it stays here.
-        # hostname comes from user-data, so local-hostname is omitted.
         "instance-id"         = [string]$NetworkConfig.GatewayVmName
+        # Consumed by user-data (jinja) as the cloud-config hostname.
+        "Hostname"            = $vmHostname
         "NetworkConfig"       = $NetworkConfig
         "VMCreateConfig"      = $VMCreateConfig
         "CloudInitConfig"     = $CloudInitConfig

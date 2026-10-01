@@ -1,6 +1,6 @@
 ## template: jinja
 #cloud-config
-hostname: loopv-gateway
+hostname: {{ ds.meta_data.Hostname }}
 manage_etc_hosts: true
 ssh_pwauth: false
 users:
