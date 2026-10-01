@@ -41,7 +41,7 @@ if not "%errorlevel%"=="0" (
 )
 
 echo Registering scheduled task %PORT_FORWARD_TASK_NAME%...
-schtasks.exe /Create /TN "%PORT_FORWARD_TASK_NAME%" /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"%PORT_FORWARD_SCRIPT%\"" /SC ONCE /ST 23:59 /RL HIGHEST /F
+schtasks.exe /Create /TN "%PORT_FORWARD_TASK_NAME%" /TR "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"%PORT_FORWARD_SCRIPT%\"" /SC ONCE /ST 23:59 /RL HIGHEST /F
 if not "%errorlevel%"=="0" (
   echo Failed to register port-forward scheduled task.
   pause
